@@ -88,6 +88,9 @@ type t =
   | Bs_toplevel_expression_unit of
       (string * top_level_unit_help) option (* 109 *)
   | Bs_todo of string option (* 110 *)
+  | Bs_reactivity_primitive_in_scope of string (* 111 *)
+  | Bs_reactivity_proxy_destructure of string (* 112 *)
+  | Bs_reactivity_stale_snapshot of string (* 113 *)
 
 (* If you remove a warning, leave a hole in the numbering.  NEVER change
    the numbers of existing warnings.
@@ -154,8 +157,11 @@ let number = function
   | Bs_uninterpreted_delimiters _ -> 108
   | Bs_toplevel_expression_unit _ -> 109
   | Bs_todo _ -> 110
+  | Bs_reactivity_primitive_in_scope _ -> 111
+  | Bs_reactivity_proxy_destructure _ -> 112
+  | Bs_reactivity_stale_snapshot _ -> 113
 
-let last_warning_number = 110
+let last_warning_number = 113
 
 let letter_all =
   let rec loop i = if i = 0 then [] else i :: loop (i - 1) in
@@ -539,6 +545,24 @@ let message = function
     ^ "\n\n\
       \  This code is not implemented yet and will crash at runtime. Make sure \
        you implement this before running the code."
+  | Bs_reactivity_primitive_in_scope primitive_name ->
+    Printf.sprintf
+      "Reactive primitive `%s` is created inside a reactive scope. Move \
+       primitive creation to a stable owner scope (for example, component body \
+       or top-level helper) and keep reactive scopes for reads/updates."
+      primitive_name
+  | Bs_reactivity_proxy_destructure proxy_name ->
+    Printf.sprintf
+      "Store proxy `%s` is destructured. This can break fine-grained \
+       reactivity. Read properties through the proxy path instead of \
+       destructuring."
+      proxy_name
+  | Bs_reactivity_stale_snapshot accessor_name ->
+    Printf.sprintf
+      "Accessor `%s` is read into a non-reactive binding. This creates a \
+       stale snapshot. Read the accessor where it is consumed or wrap the read \
+       in a reactive computation."
+      accessor_name
 
 let sub_locs = function
   | Deprecated (_, def, use, _) ->
@@ -668,6 +692,9 @@ let descriptions =
     (108, "Uninterpreted delimiters (for unicode)");
     (109, "Toplevel expression has unit type");
     (110, "Todo found");
+    (111, "Reactive primitive is created inside reactive scope");
+    (112, "Store proxy destructuring may break reactivity");
+    (113, "Signal accessor read into stale snapshot binding");
   ]
 
 let help_warnings () =

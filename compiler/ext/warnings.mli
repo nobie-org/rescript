@@ -81,6 +81,9 @@ type t =
   | Bs_toplevel_expression_unit of
       (string * top_level_unit_help) option (* 109 *)
   | Bs_todo of string option (* 110 *)
+  | Bs_reactivity_primitive_in_scope of string (* 111 *)
+  | Bs_reactivity_proxy_destructure of string (* 112 *)
+  | Bs_reactivity_stale_snapshot of string (* 113 *)
 
 val parse_options : bool -> string -> unit
 
