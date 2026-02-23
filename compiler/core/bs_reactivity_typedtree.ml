@@ -17,6 +17,8 @@ type bound_ident = {
 type callee_kind = {
   is_scope_creator : bool;
   is_primitive_creator : bool;
+  is_accessor : bool;
+  is_proxy : bool;
   primitive_name : string option;
 }
 
@@ -24,6 +26,8 @@ let empty_callee_kind =
   {
     is_scope_creator = false;
     is_primitive_creator = false;
+    is_accessor = false;
+    is_proxy = false;
     primitive_name = None;
   }
 
@@ -97,6 +101,8 @@ let callee_kind_of_value_description (description : Types.value_description) =
   {
     is_scope_creator = by_scope_attribute || by_scope_primitive_name;
     is_primitive_creator = by_primitive_attribute || by_creator_primitive_name;
+    is_accessor = false;
+    is_proxy = false;
     primitive_name;
   }
 
@@ -117,10 +123,34 @@ let callee_kind_of_ident ~path ~value_description =
     is_scope_creator = by_value_description.is_scope_creator || by_scope_name;
     is_primitive_creator =
       by_value_description.is_primitive_creator || by_primitive_name;
+    is_accessor = false;
+    is_proxy = false;
     primitive_name =
       (match by_value_description.primitive_name with
       | Some _ as name -> name
       | None -> path_name);
+  }
+
+let callee_kind_of_reactivity_summary (summary : Reactivity_index.value_summary) =
+  {
+    is_scope_creator = summary.is_scope_creator;
+    is_primitive_creator = summary.is_primitive_creator;
+    is_accessor = summary.is_accessor;
+    is_proxy = summary.is_proxy;
+    primitive_name = None;
+  }
+
+let merge_callee_kind left right =
+  {
+    is_scope_creator = left.is_scope_creator || right.is_scope_creator;
+    is_primitive_creator =
+      left.is_primitive_creator || right.is_primitive_creator;
+    is_accessor = left.is_accessor || right.is_accessor;
+    is_proxy = left.is_proxy || right.is_proxy;
+    primitive_name =
+      (match left.primitive_name with
+      | Some _ as name -> name
+      | None -> right.primitive_name);
   }
 
 let string_of_callee_name ~fallback_name = function
@@ -208,8 +238,8 @@ let call_expression_kind expression =
     callee_kind_of_expression_identifier callee
   | _ -> empty_callee_kind
 
-let expression_contains_target_call ~target_stamps ~direct_target_predicate
-    expression =
+let expression_contains_target_call ~target_stamps ~target_predicate
+    ~callee_kind_for_path expression =
   let found = ref false in
   let iterator =
     {
@@ -221,15 +251,20 @@ let expression_contains_target_call ~target_stamps ~direct_target_predicate
             (match current_expression.exp_desc with
             | Texp_apply {funct = callee; _} -> (
               match callee.exp_desc with
-              | Texp_ident (Path.Pident ident, _, value_description) ->
-                if
-                  IntSet.mem (stamp_of_ident ident) target_stamps
-                  || direct_target_predicate value_description
-                then found := true
-                else Tast_iterator.default_iterator.expr self current_expression
-              | Texp_ident (_, _, value_description) ->
-                if direct_target_predicate value_description then found := true
-                else Tast_iterator.default_iterator.expr self current_expression
+              | Texp_ident (path, _, value_description) ->
+                let by_stamp =
+                  match path with
+                  | Path.Pident ident ->
+                    IntSet.mem (stamp_of_ident ident) target_stamps
+                  | _ -> false
+                in
+                if by_stamp then found := true
+                else
+                  let kind =
+                    callee_kind_for_path ~path ~value_description
+                  in
+                  if target_predicate kind then found := true
+                  else Tast_iterator.default_iterator.expr self current_expression
               | _ -> Tast_iterator.default_iterator.expr self current_expression)
             | _ -> Tast_iterator.default_iterator.expr self current_expression));
     }
@@ -251,7 +286,7 @@ let collect_value_bindings structure =
   iterator.structure iterator structure;
   List.rev !value_bindings
 
-let compute_callable_sets value_bindings =
+let compute_callable_sets ~callee_kind_for_path value_bindings =
   let scope_callable_stamps = ref IntSet.empty in
   let primitive_callable_stamps = ref IntSet.empty in
   let changed = ref true in
@@ -286,14 +321,14 @@ let compute_callable_sets value_bindings =
             maybe_add_primitive
               (IntSet.mem source_stamp !primitive_callable_stamps);
             let direct_kind =
-              callee_kind_of_ident
+              callee_kind_for_path
                 ~path:(Path.Pident source_ident)
                 ~value_description
             in
             maybe_add_scope direct_kind.is_scope_creator;
             maybe_add_primitive direct_kind.is_primitive_creator
           | Texp_ident (path, _, value_description) ->
-            let direct_kind = callee_kind_of_ident ~path ~value_description in
+            let direct_kind = callee_kind_for_path ~path ~value_description in
             maybe_add_scope direct_kind.is_scope_creator;
             maybe_add_primitive direct_kind.is_primitive_creator
           | _ -> ());
@@ -306,18 +341,16 @@ let compute_callable_sets value_bindings =
               List.exists
                 (expression_contains_target_call
                    ~target_stamps:!scope_callable_stamps
-                   ~direct_target_predicate:(fun value_description ->
-                     (callee_kind_of_value_description value_description)
-                       .is_scope_creator))
+                   ~target_predicate:(fun kind -> kind.is_scope_creator)
+                   ~callee_kind_for_path)
                 function_bodies
             in
             let body_mentions_primitive =
               List.exists
                 (expression_contains_target_call
                    ~target_stamps:!primitive_callable_stamps
-                   ~direct_target_predicate:(fun value_description ->
-                     (callee_kind_of_value_description value_description)
-                       .is_primitive_creator))
+                   ~target_predicate:(fun kind -> kind.is_primitive_creator)
+                   ~callee_kind_for_path)
                 function_bodies
             in
             maybe_add_scope body_mentions_scope;
@@ -327,7 +360,8 @@ let compute_callable_sets value_bindings =
 
   (!scope_callable_stamps, !primitive_callable_stamps)
 
-let collect_accessor_and_proxy_sets value_bindings =
+let collect_accessor_and_proxy_sets ~lookup_reactivity_summary_for_path
+    value_bindings =
   let accessor_stamps = ref IntSet.empty in
   let proxy_stamps = ref IntSet.empty in
 
@@ -366,17 +400,49 @@ let collect_accessor_and_proxy_sets value_bindings =
     changed := false;
     List.iter
       (fun (value_binding : value_binding) ->
-        match (single_bound_ident_of_pattern value_binding.vb_pat, value_binding.vb_expr.exp_desc) with
-        | Some bound_ident, Texp_ident (Path.Pident source_ident, _, _) ->
-          let source_stamp = stamp_of_ident source_ident in
+        match
+          ( single_bound_ident_of_pattern value_binding.vb_pat,
+            value_binding.vb_expr.exp_desc )
+        with
+        | Some bound_ident, Texp_ident (path, _, _) ->
+          let source_stamp =
+            match path with
+            | Path.Pident source_ident -> Some (stamp_of_ident source_ident)
+            | _ -> None
+          in
+          let source_is_accessor =
+            match source_stamp with
+            | Some stamp -> IntSet.mem stamp !accessor_stamps
+            | None -> false
+          in
+          let source_is_proxy =
+            match source_stamp with
+            | Some stamp -> IntSet.mem stamp !proxy_stamps
+            | None -> false
+          in
+          let source_summary = lookup_reactivity_summary_for_path path in
+          let source_is_accessor =
+            source_is_accessor
+            ||
+            match source_summary with
+            | Some summary -> summary.Reactivity_index.is_accessor
+            | None -> false
+          in
+          let source_is_proxy =
+            source_is_proxy
+            ||
+            match source_summary with
+            | Some summary -> summary.Reactivity_index.is_proxy
+            | None -> false
+          in
           if
-            IntSet.mem source_stamp !accessor_stamps
+            source_is_accessor
             && not (IntSet.mem bound_ident.stamp !accessor_stamps)
           then (
             accessor_stamps := IntSet.add bound_ident.stamp !accessor_stamps;
             changed := true);
           if
-            IntSet.mem source_stamp !proxy_stamps
+            source_is_proxy
             && not (IntSet.mem bound_ident.stamp !proxy_stamps)
           then (
             proxy_stamps := IntSet.add bound_ident.stamp !proxy_stamps;
@@ -396,12 +462,105 @@ let first_non_simple_pattern_name pattern =
   | Tpat_alias (_, _, name_loc) -> Some name_loc.txt
   | _ -> None
 
-let emit_warnings structure =
+let collect_top_level_bound_idents structure =
+  let add_binding_bound_idents acc (value_binding : value_binding) =
+    collect_value_pattern_bound_idents value_binding.vb_pat @ acc
+  in
+  structure.str_items
+  |> List.fold_left
+       (fun acc structure_item ->
+         match structure_item.str_desc with
+         | Tstr_value (_, value_bindings) ->
+           List.fold_left add_binding_bound_idents acc value_bindings
+         | _ -> acc)
+       []
+  |> List.rev
+
+let unsafe_cast_name_of_path (path : Path.t) =
+  match Path.flatten path with
+  | `Contains_apply -> None
+  | `Ok (head_ident, segments) -> (
+    match Ident.name head_ident :: segments with
+    | [ "Obj"; "magic" ] -> Some "Obj.magic"
+    | [ "Js"; "Unsafe"; "coerce" ] -> Some "Js.Unsafe.coerce"
+    | _ -> None)
+
+let emit_warnings ~outputprefix structure =
+  let module_name = Env.get_unit_name () in
+  let reactivity_index_dir =
+    match Reactivity_index.index_dir_from_outputprefix outputprefix with
+    | Some _ as index_dir -> index_dir
+    | None ->
+      Reactivity_index.index_dir_from_sourcefile !Location.input_name
+  in
+
+  let lookup_reactivity_summary_for_path path =
+    match reactivity_index_dir with
+    | None -> None
+    | Some index_dir ->
+      Reactivity_index.read_value_summary_for_path ~index_dir ~path
+  in
+
+  let callee_kind_for_path ~path ~value_description =
+    let from_value_description = callee_kind_of_ident ~path ~value_description in
+    let from_summary =
+      match lookup_reactivity_summary_for_path path with
+      | None -> empty_callee_kind
+      | Some summary -> callee_kind_of_reactivity_summary summary
+    in
+    let merged = merge_callee_kind from_value_description from_summary in
+    let path_name = path_last_name path in
+    {
+      merged with
+      primitive_name =
+        (match merged.primitive_name with
+        | Some _ as name -> name
+        | None -> path_name);
+    }
+  in
+
   let value_bindings = collect_value_bindings structure in
   let scope_callable_stamps, primitive_callable_stamps =
-    compute_callable_sets value_bindings
+    compute_callable_sets ~callee_kind_for_path value_bindings
   in
-  let accessor_stamps, proxy_stamps = collect_accessor_and_proxy_sets value_bindings in
+  let accessor_stamps, proxy_stamps =
+    collect_accessor_and_proxy_sets ~lookup_reactivity_summary_for_path
+      value_bindings
+  in
+
+  let top_level_bound_idents = collect_top_level_bound_idents structure in
+  let summary_by_name = Hashtbl.create 16 in
+  List.iter
+    (fun (bound_ident : bound_ident) ->
+      let summary : Reactivity_index.value_summary =
+        {
+          is_scope_creator =
+            IntSet.mem bound_ident.stamp scope_callable_stamps;
+          is_primitive_creator =
+            IntSet.mem bound_ident.stamp primitive_callable_stamps;
+          is_accessor = IntSet.mem bound_ident.stamp accessor_stamps;
+          is_proxy = IntSet.mem bound_ident.stamp proxy_stamps;
+        }
+      in
+      if Reactivity_index.has_reactivity summary then
+        let merged =
+          match Hashtbl.find_opt summary_by_name bound_ident.name with
+          | None -> summary
+          | Some existing ->
+            Reactivity_index.merge_value_summary existing summary
+        in
+        Hashtbl.replace summary_by_name bound_ident.name merged)
+    top_level_bound_idents;
+  let module_summary_values =
+    Hashtbl.to_seq summary_by_name |> List.of_seq
+    |> List.sort (fun (left_name, _) (right_name, _) ->
+           String.compare left_name right_name)
+  in
+  (match reactivity_index_dir with
+  | None -> ()
+  | Some index_dir ->
+    Reactivity_index.write_module_summary_in_index_dir ~index_dir ~module_name
+      ~values:module_summary_values);
 
   let reactive_scope_depth = ref 0 in
   let with_reactive_scope visit =
@@ -419,9 +578,7 @@ let emit_warnings structure =
     match callee.exp_desc with
     | Texp_ident (Path.Pident ident, _, value_description) ->
       let from_value_description =
-        callee_kind_of_ident
-          ~path:(Path.Pident ident)
-          ~value_description
+        callee_kind_for_path ~path:(Path.Pident ident) ~value_description
       in
       {
         is_scope_creator =
@@ -430,13 +587,19 @@ let emit_warnings structure =
         is_primitive_creator =
           from_value_description.is_primitive_creator
           || IntSet.mem (stamp_of_ident ident) primitive_callable_stamps;
+        is_accessor =
+          from_value_description.is_accessor
+          || IntSet.mem (stamp_of_ident ident) accessor_stamps;
+        is_proxy =
+          from_value_description.is_proxy
+          || IntSet.mem (stamp_of_ident ident) proxy_stamps;
         primitive_name =
           (match from_value_description.primitive_name with
           | Some _ as name -> name
               | None -> Some (Ident.name ident));
       }
     | Texp_ident (path, _, value_description) ->
-      callee_kind_of_ident ~path ~value_description
+      callee_kind_for_path ~path ~value_description
     | _ -> empty_callee_kind
   in
 
@@ -463,12 +626,17 @@ let emit_warnings structure =
 
           (if pattern_is_destructuring value_binding.vb_pat then
              match value_binding.vb_expr.exp_desc with
-             | Texp_ident (Path.Pident source_ident, _, _) ->
-               let source_stamp = stamp_of_ident source_ident in
-               if IntSet.mem source_stamp proxy_stamps then
+             | Texp_ident (path, _, value_description) ->
+               let source_kind =
+                 callee_kind_for_path ~path ~value_description
+               in
+               if source_kind.is_proxy then
+                 let proxy_name =
+                   string_of_callee_name ~fallback_name:"store proxy"
+                     (path_last_name path)
+                 in
                  emit_warning value_binding.vb_pat.pat_loc
-                   (Warnings.Bs_reactivity_proxy_destructure
-                      (Ident.name source_ident))
+                   (Warnings.Bs_reactivity_proxy_destructure proxy_name)
              | _ -> ());
 
           if !reactive_scope_depth = 0 then (
@@ -476,20 +644,30 @@ let emit_warnings structure =
               ( single_bound_ident_of_pattern value_binding.vb_pat,
                 value_binding.vb_expr.exp_desc )
             with
-            | Some _, Texp_apply {funct = callee; _} -> (
-              match callee.exp_desc with
-              | Texp_ident (Path.Pident source_ident, _, _) ->
-                if IntSet.mem (stamp_of_ident source_ident) accessor_stamps then
+            | Some _, Texp_apply {funct = callee; _} ->
+              let callee_kind = callee_kind_for_expression callee in
+              if callee_kind.is_accessor then
+                let accessor_name =
+                  string_of_callee_name ~fallback_name:"signal accessor"
+                    callee_kind.primitive_name
+                in
                   emit_warning value_binding.vb_expr.exp_loc
                     (Warnings.Bs_reactivity_stale_snapshot
-                       (Ident.name source_ident))
-              | _ -> ())
+                       accessor_name)
             | _ -> ());
           Tast_iterator.default_iterator.value_binding self value_binding);
       expr =
         (fun self expression ->
           match expression.exp_desc with
           | Texp_apply {funct = callee; args; _} ->
+            (match callee.exp_desc with
+            | Texp_ident (path, _, _) -> (
+              match unsafe_cast_name_of_path path with
+              | Some cast_name ->
+                emit_warning expression.exp_loc
+                  (Warnings.Bs_unsafe_cast cast_name)
+              | None -> ())
+            | _ -> ());
             let callee_kind = callee_kind_for_expression callee in
             if !reactive_scope_depth > 0 && callee_kind.is_primitive_creator
             then (

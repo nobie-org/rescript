@@ -138,7 +138,7 @@ let after_parsing_impl ppf outputprefix (ast : Parsetree.structure) =
           ?check_exists:(if !Js_config.force_cmi then None else Some ())
           !Location.input_name outputprefix modulename env ast
       in
-      Bs_reactivity_typedtree.emit_warnings typedtree;
+      Bs_reactivity_typedtree.emit_warnings ~outputprefix typedtree;
       let typedtree_coercion = (typedtree, coercion) in
       print_if ppf Clflags.dump_typedtree
         Printtyped.implementation_with_coercion typedtree_coercion;

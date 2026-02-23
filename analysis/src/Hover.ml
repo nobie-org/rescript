@@ -2,6 +2,50 @@ open SharedTypes
 
 module StringSet = Set.Make (String)
 
+let value_reference_for_loc_kind ~(file : File.t) = function
+  | Definition (stamp, Tip.Value) | LocalReference (stamp, Tip.Value) -> (
+    match Stamps.findValue file.stamps stamp with
+    | Some declared -> Some (file.moduleName, declared.name.txt)
+    | None -> None)
+  | GlobalReference (module_name, path, Tip.Value) -> (
+    match List.rev path with
+    | value_name :: _ -> Some (module_name, value_name)
+    | [] -> None)
+  | Definition (_, (Tip.Type | Tip.Field _ | Tip.Constructor _ | Tip.Module))
+  | LocalReference
+      (_, (Tip.Type | Tip.Field _ | Tip.Constructor _ | Tip.Module))
+  | GlobalReference
+      (_, _, (Tip.Type | Tip.Field _ | Tip.Constructor _ | Tip.Module))
+  | NotFound -> None
+
+let reactivity_description_of_summary (summary : Reactivity_index.value_summary) =
+  let labels = ref [] in
+  if summary.is_scope_creator then
+    labels := "reactive scope creator" :: !labels;
+  if summary.is_primitive_creator then
+    labels := "reactive primitive creator" :: !labels;
+  if summary.is_accessor then labels := "reactive accessor" :: !labels;
+  if summary.is_proxy then labels := "reactive proxy" :: !labels;
+  match List.rev !labels with
+  | [] -> None
+  | labels -> Some ("Reactivity: " ^ String.concat ", " labels)
+
+let append_reactivity_annotation ~file ~package ~locKind hover_text =
+  match value_reference_for_loc_kind ~file locKind with
+  | None -> hover_text
+  | Some (module_name, value_name) ->
+    let index_dir =
+      Reactivity_index.index_dir_from_package_root package.rootPath
+    in
+    (match
+       Reactivity_index.read_value_summary ~index_dir ~module_name ~value_name
+     with
+    | None -> hover_text
+    | Some summary -> (
+      match reactivity_description_of_summary summary with
+      | None -> hover_text
+      | Some description -> hover_text ^ Markdown.divider ^ description))
+
 let showModuleTopLevel ~docstring ~isType ~name (topLevel : Module.item list) =
   let contents =
     topLevel
@@ -288,6 +332,9 @@ let newHover ~full:{file; package} ~supportsMarkdownLinks locItem =
          | Const_int64 _ -> "int64"
          | Const_bigint _ -> "bigint"))
   | Typed (_, t, locKind) -> (
+    let with_reactivity_annotation hover_text =
+      append_reactivity_annotation ~file ~package ~locKind hover_text
+    in
     let fromType ?docstring ?constructor typ =
       hoverWithExpandedTypes ~file ~package ~supportsMarkdownLinks ?docstring
         ?constructor typ
@@ -298,18 +345,19 @@ let newHover ~full:{file; package} ~supportsMarkdownLinks locItem =
     | Tpackage (path, _lids, _tys) -> (
       let env = QueryEnv.fromFile file in
       match ResolvePath.resolveModuleFromCompilerPath ~env ~package path with
-      | None -> Some (fromType t)
+      | None -> Some (fromType t |> with_reactivity_annotation)
       | Some (envForModule, Some declared) ->
         let name = Path.name path in
         showModule ~docstring:declared.docstring ~name ~file:envForModule.file
           ~package (Some declared)
-      | Some (_, None) -> Some (fromType t))
+      | Some (_, None) -> Some (fromType t |> with_reactivity_annotation))
     | _ ->
       Some
-        (match References.definedForLoc ~file ~package locKind with
+        ((match References.definedForLoc ~file ~package locKind with
         | None -> t |> fromType
         | Some (docstring, res) -> (
           match res with
           | `Declared | `Field -> t |> fromType ~docstring
           | `Constructor constructor ->
-            t |> fromType ~docstring:constructor.docstring ~constructor)))
+            t |> fromType ~docstring:constructor.docstring ~constructor))
+        |> with_reactivity_annotation))

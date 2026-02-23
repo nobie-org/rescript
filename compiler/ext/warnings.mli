@@ -84,6 +84,7 @@ type t =
   | Bs_reactivity_primitive_in_scope of string (* 111 *)
   | Bs_reactivity_proxy_destructure of string (* 112 *)
   | Bs_reactivity_stale_snapshot of string (* 113 *)
+  | Bs_unsafe_cast of string (* 114 *)
 
 val parse_options : bool -> string -> unit
 
