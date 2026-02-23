@@ -18,6 +18,14 @@ let value_reference_for_loc_kind ~(file : File.t) = function
       (_, _, (Tip.Type | Tip.Field _ | Tip.Constructor _ | Tip.Module))
   | NotFound -> None
 
+let local_value_stamp_for_loc_kind = function
+  | Definition (stamp, Tip.Value) | LocalReference (stamp, Tip.Value) ->
+    Some stamp
+  | Definition (_, (Tip.Type | Tip.Field _ | Tip.Constructor _ | Tip.Module))
+  | LocalReference
+      (_, (Tip.Type | Tip.Field _ | Tip.Constructor _ | Tip.Module))
+  | GlobalReference _ | NotFound -> None
+
 let reactivity_description_of_summary (summary : Reactivity_index.value_summary) =
   let labels = ref [] in
   if summary.is_scope_creator then
@@ -30,21 +38,33 @@ let reactivity_description_of_summary (summary : Reactivity_index.value_summary)
   | [] -> None
   | labels -> Some ("Reactivity: " ^ String.concat ", " labels)
 
-let append_reactivity_annotation ~file ~package ~locKind hover_text =
-  match value_reference_for_loc_kind ~file locKind with
+let append_reactivity_annotation ~(file : File.t) ~(package : package) ~locKind
+    hover_text =
+  let index_dir =
+    Reactivity_index.index_dir_from_package_root package.rootPath
+  in
+  let summary_from_stamp =
+    match local_value_stamp_for_loc_kind locKind with
+    | None -> None
+    | Some stamp ->
+      Reactivity_index.read_stamp_summary ~index_dir
+        ~module_name:file.moduleName ~stamp
+  in
+  let summary =
+    match summary_from_stamp with
+    | Some _ as summary -> summary
+    | None -> (
+      match value_reference_for_loc_kind ~file locKind with
+      | None -> None
+      | Some (module_name, value_name) ->
+        Reactivity_index.read_value_summary ~index_dir ~module_name ~value_name)
+  in
+  match summary with
   | None -> hover_text
-  | Some (module_name, value_name) ->
-    let index_dir =
-      Reactivity_index.index_dir_from_package_root package.rootPath
-    in
-    (match
-       Reactivity_index.read_value_summary ~index_dir ~module_name ~value_name
-     with
+  | Some summary -> (
+    match reactivity_description_of_summary summary with
     | None -> hover_text
-    | Some summary -> (
-      match reactivity_description_of_summary summary with
-      | None -> hover_text
-      | Some description -> hover_text ^ Markdown.divider ^ description))
+    | Some description -> hover_text ^ Markdown.divider ^ description)
 
 let showModuleTopLevel ~docstring ~isType ~name (topLevel : Module.item list) =
   let contents =

@@ -476,6 +476,14 @@ let collect_top_level_bound_idents structure =
        []
   |> List.rev
 
+let collect_all_bound_idents value_bindings =
+  value_bindings
+  |> List.fold_left
+       (fun acc (value_binding : value_binding) ->
+         collect_value_pattern_bound_idents value_binding.vb_pat @ acc)
+       []
+  |> List.rev
+
 let unsafe_cast_name_of_path (path : Path.t) =
   match Path.flatten path with
   | `Contains_apply -> None
@@ -529,19 +537,24 @@ let emit_warnings ~outputprefix structure =
   in
 
   let top_level_bound_idents = collect_top_level_bound_idents structure in
+  let all_bound_idents = collect_all_bound_idents value_bindings in
+
+  let summary_for_bound_ident (bound_ident : bound_ident) :
+      Reactivity_index.value_summary =
+    {
+      is_scope_creator =
+        IntSet.mem bound_ident.stamp scope_callable_stamps;
+      is_primitive_creator =
+        IntSet.mem bound_ident.stamp primitive_callable_stamps;
+      is_accessor = IntSet.mem bound_ident.stamp accessor_stamps;
+      is_proxy = IntSet.mem bound_ident.stamp proxy_stamps;
+    }
+  in
+
   let summary_by_name = Hashtbl.create 16 in
   List.iter
     (fun (bound_ident : bound_ident) ->
-      let summary : Reactivity_index.value_summary =
-        {
-          is_scope_creator =
-            IntSet.mem bound_ident.stamp scope_callable_stamps;
-          is_primitive_creator =
-            IntSet.mem bound_ident.stamp primitive_callable_stamps;
-          is_accessor = IntSet.mem bound_ident.stamp accessor_stamps;
-          is_proxy = IntSet.mem bound_ident.stamp proxy_stamps;
-        }
-      in
+      let summary = summary_for_bound_ident bound_ident in
       if Reactivity_index.has_reactivity summary then
         let merged =
           match Hashtbl.find_opt summary_by_name bound_ident.name with
@@ -556,11 +569,29 @@ let emit_warnings ~outputprefix structure =
     |> List.sort (fun (left_name, _) (right_name, _) ->
            String.compare left_name right_name)
   in
+  let summary_by_stamp = Hashtbl.create 16 in
+  List.iter
+    (fun (bound_ident : bound_ident) ->
+      let summary = summary_for_bound_ident bound_ident in
+      if Reactivity_index.has_reactivity summary then
+        let merged =
+          match Hashtbl.find_opt summary_by_stamp bound_ident.stamp with
+          | None -> summary
+          | Some existing ->
+            Reactivity_index.merge_value_summary existing summary
+        in
+        Hashtbl.replace summary_by_stamp bound_ident.stamp merged)
+    all_bound_idents;
+  let module_summary_stamps =
+    Hashtbl.to_seq summary_by_stamp |> List.of_seq
+    |> List.sort (fun (left_stamp, _) (right_stamp, _) ->
+           Int.compare left_stamp right_stamp)
+  in
   (match reactivity_index_dir with
   | None -> ()
   | Some index_dir ->
     Reactivity_index.write_module_summary_in_index_dir ~index_dir ~module_name
-      ~values:module_summary_values);
+      ~values:module_summary_values ~stamps:module_summary_stamps);
 
   let reactive_scope_depth = ref 0 in
   let with_reactive_scope visit =

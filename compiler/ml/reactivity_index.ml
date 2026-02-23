@@ -29,9 +29,10 @@ let has_reactivity summary =
 type serialized_module_summary = {
   format_version : int;
   values : (string * value_summary) list;
+  stamps : (int * value_summary) list;
 }
 
-let serialized_format_version = 1
+let serialized_format_version = 2
 
 let is_safe_filename_char = function
   | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' | '.' -> true
@@ -108,19 +109,19 @@ let index_dir_from_sourcefile sourcefile =
 let index_dir_from_package_root root =
   Filename.concat root "lib/bs/.reactivity-index"
 
-let write_module_summary_in_index_dir ~index_dir ~module_name ~values =
+let write_module_summary_in_index_dir ~index_dir ~module_name ~values ~stamps =
   try
     ensure_directory index_dir;
     write_marshaled_file
       ~path:(summary_path ~index_dir ~module_name)
-      {format_version = serialized_format_version; values}
+      {format_version = serialized_format_version; values; stamps}
   with _ -> ()
 
-let write_module_summary ~outputprefix ~module_name ~values =
+let write_module_summary ~outputprefix ~module_name ~values ~stamps =
   match index_dir_from_outputprefix outputprefix with
   | None -> ()
   | Some index_dir ->
-    write_module_summary_in_index_dir ~index_dir ~module_name ~values
+    write_module_summary_in_index_dir ~index_dir ~module_name ~values ~stamps
 
 let read_module_summary ~index_dir ~module_name =
   let path = summary_path ~index_dir ~module_name in
@@ -139,6 +140,19 @@ let read_value_summary ~index_dir ~module_name ~value_name =
     match List.find_opt (fun (name, _) -> name = value_name) values with
     | None -> None
     | Some (_, summary) -> Some summary)
+
+let read_stamp_summary ~index_dir ~module_name ~stamp =
+  let path = summary_path ~index_dir ~module_name in
+  if not (Sys.file_exists path) then None
+  else
+    try
+      let payload : serialized_module_summary = read_marshaled_file ~path in
+      if payload.format_version <> serialized_format_version then None
+      else
+        match List.find_opt (fun (candidate_stamp, _) -> candidate_stamp = stamp) payload.stamps with
+        | None -> None
+        | Some (_, summary) -> Some summary
+    with _ -> None
 
 let module_and_value_of_path (path : Path.t) =
   match Path.flatten path with

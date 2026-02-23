@@ -21,12 +21,14 @@ val write_module_summary_in_index_dir :
   index_dir:string ->
   module_name:string ->
   values:(string * value_summary) list ->
+  stamps:(int * value_summary) list ->
   unit
 
 val write_module_summary :
   outputprefix:string ->
   module_name:string ->
   values:(string * value_summary) list ->
+  stamps:(int * value_summary) list ->
   unit
 
 val read_module_summary :
@@ -34,6 +36,9 @@ val read_module_summary :
 
 val read_value_summary :
   index_dir:string -> module_name:string -> value_name:string -> value_summary option
+
+val read_stamp_summary :
+  index_dir:string -> module_name:string -> stamp:int -> value_summary option
 
 val module_and_value_of_path : Path.t -> (string * string) option
 
