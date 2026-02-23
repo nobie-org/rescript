@@ -1,5 +1,12 @@
 open Analysis
 
+let maybe_print_fork_trace () =
+  match Sys.getenv_opt "NOBIE_RESCRIPT_FORK_TRACE" with
+  | Some value when value <> "" && value <> "0" ->
+    prerr_endline
+      "[nobie-rescript-fork] tool=rescript-editor-analysis branch=matt/feat/solid-reactivity-compiler-lints"
+  | _ -> ()
+
 let help =
   {|
 **Private CLI For rescript-vscode usage only**
@@ -92,6 +99,7 @@ Options:
 |}
 
 let main () =
+  maybe_print_fork_trace ();
   let args = Array.to_list Sys.argv in
   let debugLevel, args =
     match args with

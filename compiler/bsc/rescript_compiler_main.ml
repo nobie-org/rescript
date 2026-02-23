@@ -433,9 +433,17 @@ let file_level_flags_handler (e : Parsetree.expression option) =
       Location.prerr_warning pexp_loc (Preprocessor "invalid flags for bsc"))
   | Some e -> Location.raise_errorf ~loc:e.pexp_loc "string array expected"
 
+let maybe_print_fork_trace () =
+  match Sys.getenv_opt "NOBIE_RESCRIPT_FORK_TRACE" with
+  | Some value when value <> "" && value <> "0" ->
+    prerr_endline
+      "[nobie-rescript-fork] compiler=bsc branch=matt/feat/solid-reactivity-compiler-lints"
+  | _ -> ()
+
 let _ : unit =
   Bs_conditional_initial.setup_env ();
   Clflags.color := Some Always;
+  maybe_print_fork_trace ();
 
   let flags = "flags" in
   Ast_config.add_structure flags file_level_flags_handler;
