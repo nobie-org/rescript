@@ -369,6 +369,15 @@ let collect_accessor_and_proxy_sets ~lookup_reactivity_summary_for_path
     accessor_stamps := IntSet.add bound_ident.stamp !accessor_stamps
   in
   let add_proxy bound_ident = proxy_stamps := IntSet.add bound_ident.stamp !proxy_stamps in
+  let callee_kind_for_path ~path ~value_description =
+    let from_value_description = callee_kind_of_ident ~path ~value_description in
+    let from_summary =
+      match lookup_reactivity_summary_for_path path with
+      | None -> empty_callee_kind
+      | Some summary -> callee_kind_of_reactivity_summary summary
+    in
+    merge_callee_kind from_value_description from_summary
+  in
 
   List.iter
     (fun (value_binding : value_binding) ->
@@ -400,54 +409,99 @@ let collect_accessor_and_proxy_sets ~lookup_reactivity_summary_for_path
     changed := false;
     List.iter
       (fun (value_binding : value_binding) ->
-        match
-          ( single_bound_ident_of_pattern value_binding.vb_pat,
-            value_binding.vb_expr.exp_desc )
-        with
-        | Some bound_ident, Texp_ident (path, _, _) ->
-          let source_stamp =
-            match path with
-            | Path.Pident source_ident -> Some (stamp_of_ident source_ident)
-            | _ -> None
+        match single_bound_ident_of_pattern value_binding.vb_pat with
+        | None -> ()
+        | Some bound_ident ->
+          let add_accessor_if condition =
+            if condition && not (IntSet.mem bound_ident.stamp !accessor_stamps)
+            then (
+              accessor_stamps := IntSet.add bound_ident.stamp !accessor_stamps;
+              changed := true)
           in
-          let source_is_accessor =
-            match source_stamp with
-            | Some stamp -> IntSet.mem stamp !accessor_stamps
-            | None -> false
+          let add_proxy_if condition =
+            if condition && not (IntSet.mem bound_ident.stamp !proxy_stamps)
+            then (
+              proxy_stamps := IntSet.add bound_ident.stamp !proxy_stamps;
+              changed := true)
           in
-          let source_is_proxy =
-            match source_stamp with
-            | Some stamp -> IntSet.mem stamp !proxy_stamps
-            | None -> false
+
+          (match value_binding.vb_expr.exp_desc with
+          | Texp_ident (path, _, _) ->
+            let source_stamp =
+              match path with
+              | Path.Pident source_ident -> Some (stamp_of_ident source_ident)
+              | _ -> None
+            in
+            let source_is_accessor =
+              (match source_stamp with
+              | Some stamp -> IntSet.mem stamp !accessor_stamps
+              | None -> false)
+              ||
+              match lookup_reactivity_summary_for_path path with
+              | Some summary -> summary.Reactivity_index.is_accessor
+              | None -> false
+            in
+            let source_is_proxy =
+              (match source_stamp with
+              | Some stamp -> IntSet.mem stamp !proxy_stamps
+              | None -> false)
+              ||
+              match lookup_reactivity_summary_for_path path with
+              | Some summary -> summary.Reactivity_index.is_proxy
+              | None -> false
+            in
+            add_accessor_if source_is_accessor;
+            add_proxy_if source_is_proxy
+          | Texp_apply {funct = callee; _} -> (
+            match callee.exp_desc with
+            | Texp_ident (path, _, value_description) ->
+              let callee_stamp =
+                match path with
+                | Path.Pident callee_ident -> Some (stamp_of_ident callee_ident)
+                | _ -> None
+              in
+              let callee_kind =
+                callee_kind_for_path ~path ~value_description
+              in
+              let callee_is_accessor =
+                (match callee_stamp with
+                | Some stamp -> IntSet.mem stamp !accessor_stamps
+                | None -> false)
+                || callee_kind.is_accessor
+              in
+              let callee_is_proxy =
+                (match callee_stamp with
+                | Some stamp -> IntSet.mem stamp !proxy_stamps
+                | None -> false)
+                || callee_kind.is_proxy
+              in
+              add_accessor_if callee_is_accessor;
+              add_proxy_if callee_is_proxy
+            | _ -> ())
+          | _ -> ());
+
+          let function_bodies =
+            function_body_expressions_of_expression value_binding.vb_expr
           in
-          let source_summary = lookup_reactivity_summary_for_path path in
-          let source_is_accessor =
-            source_is_accessor
-            ||
-            match source_summary with
-            | Some summary -> summary.Reactivity_index.is_accessor
-            | None -> false
-          in
-          let source_is_proxy =
-            source_is_proxy
-            ||
-            match source_summary with
-            | Some summary -> summary.Reactivity_index.is_proxy
-            | None -> false
-          in
-          if
-            source_is_accessor
-            && not (IntSet.mem bound_ident.stamp !accessor_stamps)
-          then (
-            accessor_stamps := IntSet.add bound_ident.stamp !accessor_stamps;
-            changed := true);
-          if
-            source_is_proxy
-            && not (IntSet.mem bound_ident.stamp !proxy_stamps)
-          then (
-            proxy_stamps := IntSet.add bound_ident.stamp !proxy_stamps;
-            changed := true)
-        | _ -> ())
+          if function_bodies <> [] then (
+            let body_mentions_accessor =
+              List.exists
+                (expression_contains_target_call
+                   ~target_stamps:!accessor_stamps
+                   ~target_predicate:(fun kind -> kind.is_accessor)
+                   ~callee_kind_for_path)
+                function_bodies
+            in
+            let body_mentions_proxy =
+              List.exists
+                (expression_contains_target_call
+                   ~target_stamps:!proxy_stamps
+                   ~target_predicate:(fun kind -> kind.is_proxy)
+                   ~callee_kind_for_path)
+                function_bodies
+            in
+            add_accessor_if body_mentions_accessor;
+            add_proxy_if body_mentions_proxy))
       value_bindings
   done;
 
