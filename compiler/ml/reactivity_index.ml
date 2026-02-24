@@ -3,6 +3,10 @@ type value_summary = {
   is_primitive_creator : bool;
   is_accessor : bool;
   is_proxy : bool;
+  is_setter : bool;
+  reads_reactive : bool;
+  escapes_reactive : bool;
+  escape_ok : bool;
 }
 
 let empty_value_summary =
@@ -11,6 +15,10 @@ let empty_value_summary =
     is_primitive_creator = false;
     is_accessor = false;
     is_proxy = false;
+    is_setter = false;
+    reads_reactive = false;
+    escapes_reactive = false;
+    escape_ok = false;
   }
 
 let merge_value_summary left right =
@@ -20,11 +28,16 @@ let merge_value_summary left right =
       left.is_primitive_creator || right.is_primitive_creator;
     is_accessor = left.is_accessor || right.is_accessor;
     is_proxy = left.is_proxy || right.is_proxy;
+    is_setter = left.is_setter || right.is_setter;
+    reads_reactive = left.reads_reactive || right.reads_reactive;
+    escapes_reactive = left.escapes_reactive || right.escapes_reactive;
+    escape_ok = left.escape_ok || right.escape_ok;
   }
 
 let has_reactivity summary =
   summary.is_scope_creator || summary.is_primitive_creator || summary.is_accessor
-  || summary.is_proxy
+  || summary.is_proxy || summary.is_setter || summary.reads_reactive
+  || summary.escapes_reactive || summary.escape_ok
 
 type serialized_module_summary = {
   format_version : int;
@@ -32,7 +45,7 @@ type serialized_module_summary = {
   stamps : (int * value_summary) list;
 }
 
-let serialized_format_version = 2
+let serialized_format_version = 3
 
 let is_safe_filename_char = function
   | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' | '.' -> true
@@ -154,7 +167,7 @@ let read_stamp_summary ~index_dir ~module_name ~stamp =
         | Some (_, summary) -> Some summary
     with _ -> None
 
-let module_and_value_of_path (path : Path.t) =
+let module_candidates_and_value_of_path (path : Path.t) =
   match Path.flatten path with
   | `Contains_apply -> None
   | `Ok (head_ident, segments) -> (
@@ -162,12 +175,39 @@ let module_and_value_of_path (path : Path.t) =
     | [] -> None
     | value_name :: rev_module_segments ->
       let module_segments = Ident.name head_ident :: List.rev rev_module_segments in
-      match module_segments with
-      | [module_name] -> Some (module_name, value_name)
-      | _ -> None)
+      let module_candidates =
+        match module_segments with
+        | [] -> []
+        | [module_name] -> [module_name]
+        | _ ->
+          let full_name = String.concat "__" module_segments in
+          let last_segment =
+            match List.rev module_segments with
+            | last :: _ -> last
+            | [] -> full_name
+          in
+          [full_name; last_segment]
+      in
+      if module_candidates = [] then None
+      else Some (module_candidates, value_name))
+
+let module_and_value_of_path path =
+  match module_candidates_and_value_of_path path with
+  | None -> None
+  | Some (module_candidates, value_name) -> (
+    match module_candidates with
+    | module_name :: _ -> Some (module_name, value_name)
+    | [] -> None)
 
 let read_value_summary_for_path ~index_dir ~path =
-  match module_and_value_of_path path with
+  match module_candidates_and_value_of_path path with
   | None -> None
-  | Some (module_name, value_name) ->
-    read_value_summary ~index_dir ~module_name ~value_name
+  | Some (module_candidates, value_name) ->
+    let rec loop = function
+      | [] -> None
+      | module_name :: rest -> (
+        match read_value_summary ~index_dir ~module_name ~value_name with
+        | Some _ as summary -> summary
+        | None -> loop rest)
+    in
+    loop module_candidates

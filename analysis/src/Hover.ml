@@ -32,8 +32,12 @@ let reactivity_description_of_summary (summary : Reactivity_index.value_summary)
     labels := "reactive scope creator" :: !labels;
   if summary.is_primitive_creator then
     labels := "reactive primitive creator" :: !labels;
+  if summary.reads_reactive then labels := "reads reactive values" :: !labels;
   if summary.is_accessor then labels := "reactive accessor" :: !labels;
   if summary.is_proxy then labels := "reactive proxy" :: !labels;
+  if summary.is_setter then labels := "reactive setter" :: !labels;
+  if summary.escapes_reactive then labels := "escapes reactive value" :: !labels;
+  if summary.escape_ok then labels := "reactive escape allowed" :: !labels;
   match List.rev !labels with
   | [] -> None
   | labels -> Some ("Reactivity: " ^ String.concat ", " labels)

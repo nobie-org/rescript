@@ -92,6 +92,7 @@ type t =
   | Bs_reactivity_proxy_destructure of string (* 112 *)
   | Bs_reactivity_stale_snapshot of string (* 113 *)
   | Bs_unsafe_cast of string (* 114 *)
+  | Bs_reactivity_escape of string (* 115 *)
 
 (* If you remove a warning, leave a hole in the numbering.  NEVER change
    the numbers of existing warnings.
@@ -162,8 +163,9 @@ let number = function
   | Bs_reactivity_proxy_destructure _ -> 112
   | Bs_reactivity_stale_snapshot _ -> 113
   | Bs_unsafe_cast _ -> 114
+  | Bs_reactivity_escape _ -> 115
 
-let last_warning_number = 114
+let last_warning_number = 115
 
 let letter_all =
   let rec loop i = if i = 0 then [] else i :: loop (i - 1) in
@@ -570,6 +572,12 @@ let message = function
       "Unsafe cast `%s` is forbidden. Replace with typed wrappers/bindings so \
        type safety remains enforced."
       cast_name
+  | Bs_reactivity_escape callee_name ->
+    Printf.sprintf
+      "Reactive value escapes into `%s` without reactive annotations. This can \
+       break dependency tracking. Keep reactive values in reactive APIs or mark \
+       the callee with `@reactive.escapeOk` when intentional."
+      callee_name
 
 let sub_locs = function
   | Deprecated (_, def, use, _) ->
@@ -703,6 +711,7 @@ let descriptions =
     (112, "Store proxy destructuring may break reactivity");
     (113, "Signal accessor read into stale snapshot binding");
     (114, "Unsafe cast usage (`Obj.magic` / `Js.Unsafe.coerce`)");
+    (115, "Reactive value escapes into unknown/unannotated API");
   ]
 
 let help_warnings () =

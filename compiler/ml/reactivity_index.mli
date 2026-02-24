@@ -3,6 +3,10 @@ type value_summary = {
   is_primitive_creator : bool;
   is_accessor : bool;
   is_proxy : bool;
+  is_setter : bool;
+  reads_reactive : bool;
+  escapes_reactive : bool;
+  escape_ok : bool;
 }
 
 val empty_value_summary : value_summary
